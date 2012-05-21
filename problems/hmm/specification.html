@@ -1,0 +1,279 @@
+<!-- ＃ -->
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"
+            "http://www.w3.org/TR/REC-html40/loose.dtd">
+<HTML>
+<HEAD><TITLE>Shonan Challenge for Staged HPC: 
+(Simplified) Hidden Markov Model</TITLE>
+
+<META http-equiv="Content-Type" content="text/html; charset=euc-jp">
+<META name="GENERATOR" content="hevea 1.06">
+</HEAD>
+<BODY >
+<!--HEVEA command line is: hevea -I /Users/asai/include macro.hva article.hva 1.tex -->
+<!--HTMLHEAD-->
+<!--ENDHTML-->
+<!--PREFIX <ARG ></ARG>-->
+<!--CUT DEF section 1 -->
+
+
+<H1 ALIGN=center>Shonan Challenge for Staged HPC:<BR>
+(Simplified) Hidden Markov Model</H1>
+
+<H3 ALIGN=center>Kenichi Asai</H3>
+
+<H3 ALIGN=center>May 23, 2012</H3>
+This document in <A HREF="1.pdf">pdf</A>.<BR>
+<BR>
+<!--TOC section Challenge Specification-->
+
+<H2><A NAME="htoc1">1</A>&nbsp;&nbsp;Challenge Specification</H2><!--SEC END -->
+
+<A HREF="1.ml">Program</A> in OCaml.<BR>
+<BR>
+<!--TOC subsection Input Program-->
+
+<H3><A NAME="htoc2">1.1</A>&nbsp;&nbsp;Input Program</H3><!--SEC END -->
+
+A general matrix-vector multiplication program
+(to obtain the next state in the hidden Markov model):
+<PRE>
+(* f : int array array -&gt; int array -&gt; int array *)
+let f a v =
+  let v' = Array.make n 0 in
+  for i = 0 to n-1 do
+    for j = 0 to n-1 do
+      v'.(i) &lt;- v'.(i) + a.(i).(j) * v.(j)
+    done
+  done;
+  v'
+</PRE>with a concrete sparse adjacency matrix. For example:
+<PRE>
+(* a : int array array *)
+let a = [| [| 1; 0; 0; 1; 0 |];
+           [| 0; 0; 1; 0; 0 |];
+           [| 0; 1; 0; 0; 0 |];
+           [| 0; 0; 1; 1; 1 |];
+           [| 0; 0; 1; 0; 1 |] |]
+</PRE>
+<!--TOC subsection Output Program 1-->
+
+<H3><A NAME="htoc3">1.2</A>&nbsp;&nbsp;Output Program 1</H3><!--SEC END -->
+
+A program where the elements of the array are inlined:
+<PRE>
+(* f : int array -&gt; int array *)
+let f v =
+  let v' = Array.make 5 0 in
+  v'.(0) &lt;- v.(0) + v.(3);
+  v'.(1) &lt;- v.(2);
+  v'.(2) &lt;- v.(1);
+  v'.(3) &lt;- v.(2) + v.(3) + v.(4);
+  v'.(4) &lt;- v.(2) + v.(4);
+  v'
+</PRE>
+<!--TOC subsection Output Program 2-->
+
+<H3><A NAME="htoc4">1.3</A>&nbsp;&nbsp;Output Program 2</H3><!--SEC END -->
+
+A program where the elements of the array are inlined if the number
+of non-zero elements in a row is less than a threshold (e.g., three):
+<PRE>
+(* f : int array -&gt; int array *)
+let f v =
+  let v' = Array.make 5 0 in
+  v'.(0) &lt;- v.(0) + v.(3);
+  v'.(1) &lt;- v.(2);
+  v'.(2) &lt;- v.(1);
+  for j = 0 to 4 do
+    v'.(3) &lt;- v'.(3) + a.(3).(j) * v.(j)
+  done;
+  v'.(4) &lt;- v.(2) + v.(4);
+  v'
+</PRE>
+<!--TOC section Solution 1-->
+
+<H2><A NAME="htoc5">2</A>&nbsp;&nbsp;Solution 1</H2><!--SEC END -->
+
+<A HREF="1s.ml">Program</A> in MetaOCaml.<BR>
+<BR>
+<!--TOC subsection Hack for handling semicolor properly-->
+
+<H3><A NAME="htoc6">2.1</A>&nbsp;&nbsp;Hack for handling semicolor properly</H3><!--SEC END -->
+
+The current MetaOCaml does not handle code-producing `for' loops in a
+nice way.
+Here is a hack to handle them properly (due to Ken Shan).
+It is essentially the CPS version of a `for' loop.
+<PRE>
+(* for_to : int -&gt; int -&gt; (int -&gt; 'a -&gt; 'a) -&gt; 'a -&gt; 'a *)
+let rec for_to n p f init =
+    if n &gt; p then init else for_to n (p-1) f (f p init)
+
+(* id : 'a -&gt; 'a *)
+let id c = c
+
+(* semi : 'a -&gt; 'b -&gt; 'b *)
+let semi c1 c2 = c1; c2
+</PRE>
+<!--TOC subsection Rewriting the input program-->
+
+<H3><A NAME="htoc7">2.2</A>&nbsp;&nbsp;Rewriting the input program</H3><!--SEC END -->
+
+Required rewriting of the input program for staging.
+Semantically, it is identical to the input program.
+<PRE>
+(* f1 : int array array -&gt; int array -&gt; int array *)
+let f1 a = fun v -&gt;
+  let v' = Array.make n 0 in
+  for_to 0 (n-1) (fun i -&gt;
+    for_to 0 (n-1) (fun j -&gt;
+      if a.(i).(j) = 1 then
+        semi (v'.(i) &lt;- v'.(i) + v.(j))
+      else id))
+  v'
+</PRE>
+<!--TOC subsection Staging the rewritten program-->
+
+<H3><A NAME="htoc8">2.3</A>&nbsp;&nbsp;Staging the rewritten program</H3><!--SEC END -->
+
+Staging the rewritten program to turn it into a code-generating
+program.
+<PRE>
+(* semi' : ('a, 'b) code -&gt; ('a, 'c) code -&gt; ('a, 'c) code *)
+let semi' c1 c2 = .&lt;(.~c1; .~c2)&gt;.
+
+(* f1' : int array array -&gt; ('a, int array -&gt; int array) code *)
+let f1' a = .&lt;fun v -&gt;
+  let v' = Array.make n 0 in .~(
+  for_to 0 (n-1) (fun i -&gt;
+    for_to 0 (n-1) (fun j -&gt;
+      if a.(i).(j) = 1 then
+        semi' .&lt; v'.(i) &lt;- v'.(i) + v.(j) &gt;.
+      else id))
+  .&lt;v'&gt;.)&gt;.
+</PRE>
+<!--TOC subsection Generated program-->
+
+<H3><A NAME="htoc9">2.4</A>&nbsp;&nbsp;Generated program</H3><!--SEC END -->
+
+Generated program for the exmaple matrix.
+Variable names are changed for better readability.
+<PRE>
+# f1' a;;
+- : ('a, int array -&gt; int array) code =
+.&lt;fun v -&gt;
+   let v' = Array.make 5 0 in
+   v'.(0) &lt;- v'.(0) + v.(0);
+   v'.(0) &lt;- v'.(0) + v.(3);
+   v'.(1) &lt;- v'.(1) + v.(2);
+   v'.(2) &lt;- v'.(2) + v.(1);
+   v'.(3) &lt;- v'.(3) + v.(2);
+   v'.(3) &lt;- v'.(3) + v.(3);
+   v'.(3) &lt;- v'.(3) + v.(4);
+   v'.(4) &lt;- v'.(4) + v.(2);
+   v'.(4) &lt;- v'.(4) + v.(4);
+   v'&gt;.
+</PRE>If we want to optimize sequences of assigments further (to turn the 
+first two assignments to <TT>v'.(0) &lt;- v.(0) + v.(3);</TT>, for example),
+we need some more elaboration.
+(Possibly, the compiler can do such a rather simple optimization?)<BR>
+<BR>
+<!--TOC section Solution 2-->
+
+<H2><A NAME="htoc10">3</A>&nbsp;&nbsp;Solution 2</H2><!--SEC END -->
+
+<A HREF="1s.ml">Program</A> in MetaOCaml.<BR>
+<BR>
+<!--TOC subsection Rewriting the input program-->
+
+<H3><A NAME="htoc11">3.1</A>&nbsp;&nbsp;Rewriting the input program</H3><!--SEC END -->
+
+Required rewriting of the input program for staging
+(using the same hack for `for' loop).
+<PRE>
+(* non_zeros : int array -&gt; int *)
+let rec non_zeros v =
+  let n = ref 0 in
+  for i = 0 to Array.length v - 1 do
+    if v.(i) &lt;&gt; 0 then n := !n + 1
+  done;
+  !n
+
+(* example threshold *)
+let threshold = 3
+
+(* f2 : int array array -&gt; int array -&gt; int array *)
+let f2 a = fun v -&gt;
+  let v' = Array.make n 0 in
+  for_to 0 (n-1) (fun i -&gt;
+    if non_zeros a.(i) &lt; threshold
+    then for_to 0 (n-1) (fun j -&gt;
+           if a.(i).(j) = 1 then
+             semi (v'.(i) &lt;- v'.(i) + v.(j))
+           else id)
+    else semi
+         (for j = 0 to (let n' = n-1 in n') do
+            v'.(i) &lt;- v'.(i) + a.(i).(j) * v.(j)
+          done))
+  v'
+</PRE>To handle the row with many non-zero elements, we explicitly introduce
+an if expression into the program.
+Since both the branches perform the same task, however, it is still
+semantically identical to the original program.
+Notice that CPS <TT>for_</TT><TT>to</TT> is used in the `then' branch,
+while the original <TT>for</TT> is used in the `else' branch
+for the better staging result.<BR>
+<BR>
+<!--TOC subsection Staging the rewritten program-->
+
+<H3><A NAME="htoc12">3.2</A>&nbsp;&nbsp;Staging the rewritten program</H3><!--SEC END -->
+
+Staging the rewritten program to turn it into a code-generating
+program (<TT>semi'</TT> being the same as before).
+<PRE>
+(* f2' : int array array -&gt; ('a, int array -&gt; int array) code *)
+let f2' a = .&lt;fun v -&gt;
+  let v' = Array.make n 0 in .~(
+  for_to 0 (n-1) (fun i -&gt;
+    if non_zeros a.(i) &lt; threshold
+    then for_to 0 (n-1) (fun j -&gt;
+           if a.(i).(j) = 1 then
+             semi' .&lt; v'.(i) &lt;- v'.(i) + v.(j) &gt;.
+           else id)
+    else semi'
+      .&lt; for j = 0 to .~(let n' = n-1 in .&lt;n'&gt;.) do
+           v'.(i) &lt;- v'.(i) + a.(i).(j) * v.(j)
+         done &gt;.)
+  .&lt;v'&gt;.)&gt;.
+</PRE>
+<!--TOC subsection Generated program-->
+
+<H3><A NAME="htoc13">3.3</A>&nbsp;&nbsp;Generated program</H3><!--SEC END -->
+
+Generated program for the exmaple matrix.
+Variable names are changed for better readability.
+<PRE>
+# f2' a;;
+- : ('a, int array -&gt; int array) code =
+.&lt;fun v -&gt;
+   let v' = Array.make 5 0 in
+   v'.(0) &lt;- v'.(0) + v.(0);
+   v'.(0) &lt;- v'.(0) + v.(3);
+   v'.(1) &lt;- v'.(1) + v.(2);
+   v'.(2) &lt;- v'.(2) + v.(1);
+   for j = 0 to 4 do
+     v'.(3) &lt;- v'.(3) + a.(3).(j) * v.(j)
+   done;
+   v'.(4) &lt;- v'.(4) + v.(2);
+   v'.(4) &lt;- v'.(4) + v.(4);
+   v'&gt;.
+</PRE>
+<!--HTMLFOOT-->
+<!--ENDHTML-->
+<!--FOOTER-->
+<HR SIZE=2>
+<BLOCKQUOTE><EM>This document was translated from L<sup>A</sup>T<sub>E</sub>X by
+</EM><A HREF="http://pauillac.inria.fr/~maranget/hevea/index.html"><EM>H<FONT SIZE=2><sup>E</sup></FONT>V<FONT SIZE=2><sup>E</sup></FONT>A</EM></A><EM>.
+</EM></BLOCKQUOTE>
+</BODY>
+</HTML>
