@@ -1,0 +1,80 @@
+// Original: 2012.06.08 Reiji Suda
+
+Difference of data structures of complex number vectors can be posed as
+follows.
+
+Assume that we have type conversion routines:
+
+typedef struct {
+  double r, i;
+} complex;
+
+typedef struct {
+  double *r, *i;
+} complex_v;
+
+complex* soa2aos(int n, complex_v s) {
+  complex *a = (complex*) malloc(sizeof(complex) * n);
+
+  int i;
+  for (i=0; i< n; i++) {
+    a[i].r = s.r[i];
+    a[i].i = s.i[i];
+  }
+
+  return a;
+}
+
+complex_v aos2soa(int n, complex *a) {
+  complex_v s;
+  s.r = (double*) malloc(sizeof(double) * n);
+  s.i = (double*) malloc(sizeof(double) * n);
+
+  int i;
+  for (i=0; i< n; i++) {
+    s.r[i] = a[i].r;
+    s.i[i] = a[i].i;
+  }
+
+  return s;
+}
+
+Then, if we are given the following codes
+
+complex_v soa_cmul(int n, complex_v b, complex_v c) {
+  complex_v a;
+  a.r = (double*) malloc(sizeof(double) * n);
+  a.i = (double*) malloc(sizeof(double) * n);
+
+  int i;
+  for (i=0; i< n; i++) {
+    a.r[i] = b.r[i] * c.r[i] - b.i[i] * c.i[i];
+    a.i[i] = b.r[i] * c.i[i] + b.i[i] * c.r[i];
+  }
+
+  return a;
+}
+
+complex* aos_cmul(int n, complex *b, complex *c) {
+  complex_v bb = aos2soa(n, b);
+  complex_v cc = aos2soa(n, c);
+  complex_v aa = soa_cmul(n, bb, cc);
+  complex *a = soa2aos(n, aa);
+  free(bb);  free(cc);  free(aa);
+  return a;
+}
+
+can we optimize aos_cmul into the following?
+
+complex* soa_cmul(int n, complex *b, complex *c) {
+  complex *a = (complex*) malloc(sizeof(complex) * n);
+
+  int i;
+  for (i=0; i< n; i++) {
+    a[i].r = b[i].r * c[i].r - b[i].i * c[i].i;
+    a[i].i = b[i].r * c[i].i + b[i].i * c[i].r;
+  }
+
+  return a;
+}
+
