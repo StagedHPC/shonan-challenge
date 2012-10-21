@@ -1,0 +1,171 @@
+Generating optimal stencil code
+
+    Generating memory-bandwidth--optimal code for array computations
+    -- typical of PDE solvers and signal processing kernels -- was one
+    of the Shonan Challenge benchmarks. The challenge was submitted by
+    Takayuki Muranushi, an astrophysicist whose work depends on
+    solving PDEs on truly huge meshes. This article answers the
+    challenge. It develops a domain-specific language (DSL) for
+    stencil computations, embedded in (Meta)OCaml. The generated code
+    attains the bandwidth optimality -- the B/F ratio -- of the
+    hand-optimized code. The generated code correctly handles the edge
+    cases, which were problematic for the hand-written code. The
+    generated code assuredly has no array bound errors, which also
+    troubled the hand-written code.
+
+    The stencil EDSL is the straightforward application of the
+    previous, seemingly purely academic, `useless' work on generating
+    optimal Gibonacci codes and the let-insertion with delimited
+    control. The key insight is regarding a stencil as a
+    sliding-window cache, for real or virtual arrays. The
+    implementation demonstrated that scope extrusion is a problem in
+    practice after all, justifying the research into its static
+    prevention.
+
+    The main challenge in high-performance computing (HPC) is
+    overcoming the memory bottleneck, reducing the amount of time CPU
+    (local node) spends waiting for data. The speed disparity between
+    the CPU and the memory subsystem is often characterized by the
+    so-called B/F ratio: the ratio of the number of bytes moved from
+    or to the main memory during a computation to the number of
+    executed floating-point operations. The challenge of the HPC code
+    optimization is to reduce the B/F ratio and the amount of needed
+    local memory.
+
+    Signal processing or finite-element algorithms can often be stated
+    as element-wise computations on shifted arrays. The following is
+    the running example in the challenge.
+
+         w = a * S[1] a
+         b = a - w + S[-1] w
+
+    Here a is a global input array, b is a global output array, and w
+    is a working array. The operation S[n] shifts the argument vector
+    by n (to the left, if n is positive). All arithmetic operations on
+    vectors (addition, multiplication, subtraction) are
+    elementwise. Global arrays are shared or distributed throughout a
+    supercomputer; reading or writing them requires accessing
+    off-the-chip memory or the inter-node communication.
+
+    The naive implementation, neglecting for now edge elements, can be
+    written in OCaml as
+
+         for i=0 to (n-2) do
+           w.(i) <- a.(i) *. a.(i+1)
+         done;
+         for i=1 to (n-1) do
+           b.(i) <- a.(i) -. w.(i) +. w.(i-1)
+         done
+
+    Assuming w is a local array, the first loop reads 2*(n-1) elements
+    from the global array a and does (n-1) floating-point
+    additions. The second loop reads n-1 elements from a, writes n-1
+    elements to b and does 2*(n-1) floating-point computations. With
+    8-byte floating-point values, the B/F ratio is 32/3. Current
+    supercomputers can sustain B/F of about 1 to 2. Therefore, the
+    naive implementation will run the order of magnitude worse the
+    peak performance, because global memory cannot keep up with the
+    CPU. The slow-down will likely to be larger since for large n, the
+    array w won't fit into the local memory (cache).
+
+    After the array computation finishes, the output array b becomes
+    the input array for the next `time step', and the computation
+    continues. The B/F ratio can be reduced by doing two time steps at
+    once:
+
+         w1 = a * S[1] a
+         wm = a - w1 + S[-1] w1
+         w2 = wm * S[1] wm
+         b  = wm - w2 + S[-1] w2
+
+    The naive implementation has B/F of 32/6 -- with twice as many
+    floating-point operations per global memory access. However, the
+    implementation requires three times more local memory.
+
+    We generate the code that reads and writes only 1 floating-point
+    value per loop iteration while executing 6 floating-point
+    operations, for B/F = 16/6 -- without using any local arrays. The
+    code is expected to run nearly at the peak speed of the
+    supercomputer.
+
+    The enclosed code develops the EDSL for stencil computation in
+    three steps, starting with the naive implementation generating
+    many duplicate array accesses. The array accesses are then cached
+    in local variables. Finally, a stencil is introduced as a
+    sliding-window cache. For illustration, here is the naive
+    generator of the double-time-step computation:
+
+         let t21 max_bounded a b =
+           forlooph 2 min_bounded max_bounded (
+             let a = gref0 a in
+             let w1 = a *@ ashift 1 a in 
+             let wm = a -@ w1 +@ ashift (-1) w1 in
+             let w2 = wm *@ ashift 1 wm in
+             b <-@ wm -@ w2 +@ ashift (-1) w2)
+
+    where *@, +@ etc. are element-wise operations on arrays, ashift n
+    is the array shift S[n] and forlooph 2 is a loop combinator that
+    unrolls the first and the last two iterations. The generator will
+    complain if the halo value is less than 2 because it cannot see
+    (correctly) that array indices are in-bounds. The EDSL code looks
+    quite like the mathematical notation. To generate the optimal
+    code, we merely add stencil_memo combinators:
+
+         let t25 max_bounded a b =
+           let p = new_prompt () and q = new_prompt () in
+           push_prompt q (fun () ->
+           forlooph 2 min_bounded max_bounded (with_body_prompt p (
+             let a  = stencil_memo q p (gref0 a) in
+             let w1 = stencil_memo q p (a *@ ashift 1 a) in 
+             let wm = stencil_memo q p (a -@ w1 +@ ashift (-1) w1) in
+             let w2 = stencil_memo q p (wm *@ ashift 1 wm) in
+             b <-@ wm -@ w2 +@ ashift (-1) w2)))
+
+    The combinators need to know the loop scope (the scope of
+    loop-local variables) and the outer scope (the scope of the
+    variables to store data cross-iteration). So-called prompts q and
+    p denote those scopes. The generated code, shown in the comments
+    in stencil.ml, reads and writes a global array once per iteration
+    and does six floating-point operations, with the B/F of 16/6.
+
+    The hand-optimized code has essentially the same loop body and the
+    same B/F. However, the first versions of the hand-written code
+    left the elements 0, 1, and n-1 of the output array
+    uninitialized. Furthermore, the code read past the end of the
+    input array. Getting edge cases right is really difficult. The
+    generated code has very long and boring pieces of code before and
+    after the main loop, to properly compute the edge
+    elements. Writing such tedious code by hand is excruciatingly
+    boring. Code generation truly helps.
+
+    The stencil challenge proved to be a surprisingly good motivation
+    for the research on staging. It required the code generation with
+    effects, in particular, effects crossing binders. Implementing the
+    challenge showed that scope extrusion does happen in
+    practice. Although the fact of scope extrusion is easy to see when
+    compiling the generated code, finding the culprit within the
+    generator turns out difficult.  Version The current version is
+    October, 2012.
+
+    References
+
+    stencil-challenge.cpp [6K]
+    Takayuki Muranushi: PDE challenge A local copy of the file
+    problems/tiling/main1.cpp committed to the Shonan-challenge GitHub
+    repository on 2012-05-21 The file describes the challenge showing
+    the naive and the hand-optimized code.
+
+    stencil_hand.ml [4K]
+    Reference code: specification and the hand-written optimized code
+    The code correctly handles the edges cases and has unit tests.
+
+    stencil.ml [28K]
+    The MetaOCaml code of the solution to the challenge
+    The file gradually develops the EDSL for stencil computations and
+    has lots of generated sample code and numerical tests.
+    The code requires MetaOCaml and the delimcc library.
+
+    bounded.mli [3K]
+    bounded.ml [5K]
+    Partially known dynamic values for safe array indexing
+    A library for statically tracking bounds on unknown dynamic values.
