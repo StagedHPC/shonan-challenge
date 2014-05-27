@@ -258,7 +258,7 @@ int main () {
   system("mkdir -p frame");
 
 
-  for (int n = 0; n < 100; ++n) {
+  for (int n = 0; n < 200; ++n) {
     cout << n << " " << Vz[NZ/2][NY/2][NX/2] << endl;
     for (int m = 0; m < 10; ++m) {
       diff_V();
